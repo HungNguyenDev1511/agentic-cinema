@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+google-adk
+google-genai
+pydantic
+python-dotenv
+pymupdf

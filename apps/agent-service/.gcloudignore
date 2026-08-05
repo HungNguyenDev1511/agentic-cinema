@@ -1,0 +1,11 @@
+.gcloudignore
+.git
+.gitignore
+__pycache__/
+*.pyc
+*.pyo
+*.log
+.env
+.adk/
+test_agent.py
+services/test_parser.py
