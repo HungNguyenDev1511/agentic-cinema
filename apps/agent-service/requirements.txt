@@ -4,4 +4,5 @@ google-adk
 google-genai
 pydantic
 python-dotenv
+clickhouse-connect
 pymupdf

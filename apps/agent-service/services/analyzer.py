@@ -1,4 +1,4 @@
-from pathlib import Path
+import os
 
 from dotenv import load_dotenv
 from google.adk.runners import Runner
@@ -8,13 +8,9 @@ from google.genai import types
 from continuity_agent.agent import root_agent
 
 
-# analyzer.py:
-# agentic-cinema/apps/agent-service/services/analyzer.py
-# parents[3] points to agentic-cinema.
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-ENV_FILE = PROJECT_ROOT / ".env"
-
-load_dotenv(ENV_FILE, override=True)
+# Local: nạp .env nếu có.
+# Cloud Run: biến môi trường đã được inject trực tiếp.
+load_dotenv(override=False)
 
 
 class ContinuityAnalyzer:
@@ -22,6 +18,24 @@ class ContinuityAnalyzer:
     USER_ID = "demo-user"
 
     def __init__(self) -> None:
+        required_variables = [
+            "GOOGLE_GENAI_USE_VERTEXAI",
+            "GOOGLE_CLOUD_PROJECT",
+            "GOOGLE_CLOUD_LOCATION",
+        ]
+
+        missing_variables = [
+            variable
+            for variable in required_variables
+            if not os.getenv(variable)
+        ]
+
+        if missing_variables:
+            raise RuntimeError(
+                "Missing required environment variables: "
+                + ", ".join(missing_variables)
+            )
+
         self.session_service = InMemorySessionService()
 
         self.runner = Runner(
