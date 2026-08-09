@@ -12,10 +12,8 @@ import {
   Check,
   CheckCircle2,
   Circle,
-  Clock3,
   Clapperboard,
   Database,
-  DollarSign,
   FileSearch,
   FileText,
   Film,
@@ -28,35 +26,9 @@ import {
   XCircle,
 } from "lucide-react";
 
-import { demoAnalysis } from "@/data/demo-analysis";
-
 /* =========================================================
    TYPES
 ========================================================= */
-
-type AgentIssue = {
-  scene_number: number;
-  category: string;
-  severity: string;
-  title: string;
-  expected_state: string;
-  observed_state: string;
-  confidence: number;
-  recommended_action: {
-    action: string;
-    priority: string;
-    estimated_delay_hours: number;
-    estimated_cost_usd: number;
-  };
-};
-
-type AgentAnalysis = {
-  production_name: string;
-  continuity_score: number;
-  status: string;
-  summary: string;
-  issues: AgentIssue[];
-};
 
 type AgentName =
   | "script_agent"
@@ -105,10 +77,18 @@ type ActivityItem = {
 };
 
 type HistoryCase = {
+  run_id: string;
   production_name: string;
   continuity_score: number;
   status: string;
-  summary: string;
+  producer_decision: string;
+  scene_number: number;
+  category: string;
+  severity: string;
+  title: string;
+  expected_state: string;
+  observed_state: string;
+  confidence: number;
 };
 
 type HistoryAgentOutput = {
@@ -137,6 +117,21 @@ type ContinuityAgentIssue = {
 type ContinuityAgentOutput = {
   production_name: string;
   issues: ContinuityAgentIssue[];
+};
+
+
+type ScriptAgentScene = {
+  scene_number: number;
+  characters: unknown[];
+  props: unknown[];
+  wardrobe: unknown[];
+  location?: string | null;
+  events: string[];
+};
+
+type ScriptAgentOutput = {
+  production_name: string;
+  scenes: ScriptAgentScene[];
 };
 
 type ProducerAgentOutput = {
@@ -322,15 +317,10 @@ export default function Home() {
   const fileInputRef =
     useRef<HTMLInputElement>(null);
 
-  const [analysis, setAnalysis] =
-    useState(demoAnalysis);
-
   const [
     productionText,
     setProductionText,
-  ] = useState(
-    DEFAULT_PRODUCTION_TEXT,
-  );
+  ] = useState("");
 
   const [
     selectedFileName,
@@ -368,6 +358,11 @@ export default function Home() {
   ] = useState(false);
 
   const [
+    scriptOutput,
+    setScriptOutput,
+  ] = useState<ScriptAgentOutput | null>(null);
+
+  const [
     historyOutput,
     setHistoryOutput,
   ] = useState<HistoryAgentOutput | null>(null);
@@ -387,39 +382,99 @@ export default function Home() {
   ======================================================= */
 
   const renderedIssues =
-    continuityOutput?.issues ??
-    analysis.issues.map((issue) => ({
-      scene_number: issue.sceneNumber,
-      category: issue.category,
-      severity: issue.severity,
-      title: issue.title,
-      expected_state: issue.expectedState,
-      observed_state: issue.observedState,
-      confidence: issue.confidence,
-      evidence: [],
-    }));
-
-  const totalDelay =
-    analysis.issues.reduce(
-      (sum, issue) =>
-        sum +
-        issue.estimatedDelayHours,
-      0,
-    );
-
-  const totalCost =
-    analysis.issues.reduce(
-      (sum, issue) =>
-        sum +
-        issue.estimatedCostUsd,
-      0,
-    );
+    continuityOutput?.issues ?? [];
 
   const completedAgents =
     agentSteps.filter(
       (step) =>
         step.status === "completed",
     ).length;
+
+  const totalScenes =
+    scriptOutput?.scenes?.length ?? 0;
+
+  const criticalIssues =
+    renderedIssues.filter(
+      (issue) =>
+        issue.severity === "CRITICAL" ||
+        issue.severity === "HIGH",
+    ).length;
+
+  function getContinuityScore() {
+    if (!continuityOutput) {
+      return 100;
+    }
+
+    if (renderedIssues.length === 0) {
+      return 100;
+    }
+
+    const rank: Record<string, number> = {
+      LOW: 1,
+      MEDIUM: 2,
+      HIGH: 3,
+      CRITICAL: 4,
+    };
+
+    const highestSeverity =
+      renderedIssues.reduce(
+        (highest, issue) => {
+          const current =
+            issue.severity?.toUpperCase() ??
+            "LOW";
+
+          return (
+            (rank[current] ?? 1) >
+            (rank[highest] ?? 1)
+          )
+            ? current
+            : highest;
+        },
+        "LOW",
+      );
+
+    if (highestSeverity === "CRITICAL") {
+      return 35;
+    }
+
+    if (highestSeverity === "HIGH") {
+      return 60;
+    }
+
+    if (highestSeverity === "MEDIUM") {
+      return 80;
+    }
+
+    return 90;
+  }
+
+  const liveContinuityScore =
+    getContinuityScore();
+
+  const liveStatus =
+    !continuityOutput
+      ? "READY"
+      : renderedIssues.length === 0
+        ? "OK"
+        : liveContinuityScore <= 35
+          ? "CRITICAL"
+          : liveContinuityScore <= 60
+            ? "AT_RISK"
+            : liveContinuityScore <= 80
+              ? "REVIEW"
+              : "WATCH";
+
+  const liveSummary =
+    producerOutput?.executive_summary ??
+    (renderedIssues.length > 0
+      ? `${renderedIssues.length} continuity ${
+          renderedIssues.length === 1
+            ? "issue was"
+            : "issues were"
+        } detected by the AI production crew.`
+      : continuityOutput
+        ? "No continuity issues were detected in the submitted production context."
+        : "Load a production package and run the AI crew to generate live continuity intelligence.");
 
   /* =======================================================
      UTILITIES
@@ -629,6 +684,16 @@ export default function Home() {
       );
 
       if (
+        event.agent === "script_agent" &&
+        event.output &&
+        typeof event.output === "object"
+      ) {
+        setScriptOutput(
+          event.output as ScriptAgentOutput,
+        );
+      }
+
+      if (
         event.agent === "continuity_agent" &&
         event.output &&
         typeof event.output === "object"
@@ -744,6 +809,7 @@ export default function Home() {
     setIsAnalyzing(true);
     setError(null);
     setPipelineCompleted(false);
+    setScriptOutput(null);
     setHistoryOutput(null);
     setContinuityOutput(null);
     setProducerOutput(null);
@@ -904,7 +970,9 @@ export default function Home() {
             </h1>
 
             <p className="mt-2 text-slate-400">
-              {continuityOutput?.production_name ?? analysis.productionName}
+              {continuityOutput?.production_name ??
+                scriptOutput?.production_name ??
+                "Production Intelligence"}
               {" · "}
               AI Production Crew
             </p>
@@ -1212,7 +1280,7 @@ export default function Home() {
               {historyOutput.historical_context.map(
                 (item, index) => (
                   <article
-                    key={`${item.production_name}-${index}`}
+                    key={`${item.run_id}-${index}`}
                     className="rounded-2xl border border-white/10 bg-slate-900/70 p-5"
                   >
                     <div className="flex items-start justify-between gap-4">
@@ -1231,7 +1299,7 @@ export default function Home() {
                       </span>
                     </div>
 
-                    <div className="mt-3">
+                    <div className="mt-3 flex flex-wrap gap-2">
                       <span
                         className={`rounded-full px-3 py-1 text-xs ${
                           item.status === "CRITICAL"
@@ -1241,10 +1309,46 @@ export default function Home() {
                       >
                         {item.status.replaceAll("_", " ")}
                       </span>
+
+                      <span className="rounded-full bg-violet-500/15 px-3 py-1 text-xs text-violet-300">
+                        {item.producer_decision.replaceAll("_", " ")}
+                      </span>
+
+                      <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-slate-300">
+                        Scene {item.scene_number}
+                      </span>
+
+                      <span className="rounded-full bg-rose-500/15 px-3 py-1 text-xs text-rose-300">
+                        {item.severity}
+                      </span>
                     </div>
 
-                    <p className="mt-4 text-sm leading-6 text-slate-300">
-                      {item.summary}
+                    <p className="mt-4 font-medium text-slate-200">
+                      {item.title}
+                    </p>
+
+                    <div className="mt-3 grid gap-3 md:grid-cols-2">
+                      <div className="rounded-xl bg-black/20 p-3">
+                        <p className="text-xs uppercase text-slate-500">
+                          Expected
+                        </p>
+                        <p className="mt-1 text-sm leading-6 text-slate-300">
+                          {item.expected_state}
+                        </p>
+                      </div>
+
+                      <div className="rounded-xl bg-black/20 p-3">
+                        <p className="text-xs uppercase text-slate-500">
+                          Observed
+                        </p>
+                        <p className="mt-1 text-sm leading-6 text-slate-300">
+                          {item.observed_state}
+                        </p>
+                      </div>
+                    </div>
+
+                    <p className="mt-3 text-xs text-slate-500">
+                      Confidence {Math.round(item.confidence * 100)}% · Run {item.run_id.slice(0, 8)}
                     </p>
                   </article>
                 ),
@@ -1340,49 +1444,27 @@ export default function Home() {
 
         <section className="mt-7 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <StatCard
-            label="Total scenes"
-            value={
-              analysis.stats
-                .totalScenes
-            }
-            icon={
-              Clapperboard
-            }
+            label="Scenes parsed"
+            value={totalScenes}
+            icon={Clapperboard}
           />
 
           <StatCard
-            label="Completed"
-            value={
-              analysis.stats
-                .completedScenes
-            }
-            icon={
-              CheckCircle2
-            }
+            label="Agents completed"
+            value={`${completedAgents}/${agentSteps.length}`}
+            icon={CheckCircle2}
           />
 
           <StatCard
             label="Open issues"
-            value={
-              renderedIssues.length
-            }
-            icon={
-              AlertTriangle
-            }
+            value={renderedIssues.length}
+            icon={AlertTriangle}
           />
 
           <StatCard
             label="Critical issues"
-            value={
-              renderedIssues.filter(
-                (issue) =>
-                  issue.severity === "CRITICAL" ||
-                  issue.severity === "HIGH",
-              ).length
-            }
-            icon={
-              ShieldAlert
-            }
+            value={criticalIssues}
+            icon={ShieldAlert}
           />
         </section>
 
@@ -1398,7 +1480,7 @@ export default function Home() {
             <div className="mt-5 flex items-end gap-2">
               <span className="text-7xl font-semibold">
                 {
-                  analysis.continuityScore
+                  liveContinuityScore
                 }
               </span>
 
@@ -1411,45 +1493,44 @@ export default function Home() {
               <div
                 className="h-full rounded-full bg-violet-400 transition-all duration-500"
                 style={{
-                  width: `${analysis.continuityScore}%`,
+                  width: `${liveContinuityScore}%`,
                 }}
               />
             </div>
 
             <div className="mt-5 inline-flex rounded-full border border-amber-400/30 bg-amber-400/10 px-3 py-1 text-sm text-amber-300">
-              {analysis.status.replaceAll(
+              {liveStatus.replaceAll(
                 "_",
                 " ",
               )}
             </div>
 
             <p className="mt-5 leading-7 text-slate-300">
-              {analysis.summary}
+              {liveSummary}
             </p>
 
             <div className="mt-8 grid grid-cols-2 gap-3">
               <div className="rounded-2xl bg-black/20 p-4">
-                <Clock3 className="h-5 w-5 text-slate-400" />
+                <Database className="h-5 w-5 text-slate-400" />
 
                 <p className="mt-3 text-2xl font-semibold">
-                  {totalDelay}h
+                  {historyOutput?.similar_cases ?? 0}
                 </p>
 
                 <p className="text-xs text-slate-400">
-                  Estimated delay
+                  Historical matches
                 </p>
               </div>
 
               <div className="rounded-2xl bg-black/20 p-4">
-                <DollarSign className="h-5 w-5 text-slate-400" />
+                <UserRoundCog className="h-5 w-5 text-slate-400" />
 
-                <p className="mt-3 text-2xl font-semibold">
-                  $
-                  {totalCost.toLocaleString()}
+                <p className="mt-3 text-lg font-semibold">
+                  {producerOutput?.priority ?? "PENDING"}
                 </p>
 
                 <p className="text-xs text-slate-400">
-                  Estimated exposure
+                  Producer priority
                 </p>
               </div>
             </div>
