@@ -257,8 +257,9 @@ Priority: CRITICAL
 
 with supporting reasoning and an actionable production plan.
 
-📂 Repository Structure
+## 📂 Repository Structure
 
+```text
 agentic-cinema/
 │
 ├── apps/
@@ -278,6 +279,7 @@ agentic-cinema/
 │
 ├── README.md
 └── LICENSE
+```
 
 🚀 Running Locally
 
@@ -291,8 +293,9 @@ Google Cloud project with Vertex AI access
 
 ClickHouse instance
 
-Backend
+### Backend
 
+```bash
 cd apps/agent-service
 
 python -m venv .venv
@@ -303,6 +306,7 @@ python -m venv .venv
 pip install -r requirements.txt
 
 uvicorn api:app --host 0.0.0.0 --port 8001
+```
 
 Create the required environment configuration locally.
 
@@ -320,21 +324,25 @@ CLICKHOUSE_DATABASE
 
 Do not commit credentials or secrets to the repository.
 
-Frontend
+### Frontend
 
+```bash
 cd apps/web
 npm install
 npm run dev
+```
 
 Configure:
 
+```text
 AGENT_API_URL
-
-to point to the Agentic Cinema backend.
+```
 
 Then open:
 
+```text
 http://localhost:3000
+```
 
 ☁️ Deployment
 
