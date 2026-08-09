@@ -1,22 +1,38 @@
 "use client";
 
-import { ChangeEvent, useRef, useState } from "react";
+import {
+  ChangeEvent,
+  useRef,
+  useState,
+} from "react";
+
 import {
   AlertTriangle,
+  Bot,
+  Check,
   CheckCircle2,
+  Circle,
   Clock3,
   Clapperboard,
+  Database,
   DollarSign,
+  FileSearch,
   FileText,
   Film,
   LoaderCircle,
   ShieldAlert,
   Sparkles,
   Upload,
+  UserRoundCog,
   X,
+  XCircle,
 } from "lucide-react";
 
 import { demoAnalysis } from "@/data/demo-analysis";
+
+/* =========================================================
+   TYPES
+========================================================= */
 
 type AgentIssue = {
   scene_number: number;
@@ -42,19 +58,165 @@ type AgentAnalysis = {
   issues: AgentIssue[];
 };
 
-const DEFAULT_PRODUCTION_TEXT = `Production name: The Last Train
+type AgentName =
+  | "script_agent"
+  | "continuity_agent"
+  | "history_agent"
+  | "producer_agent";
 
-Scene 12: Maya wears a blue coat and a silver necklace at a train station.
-At the end of the scene, she loses the necklace on the platform.
+type AgentStatus =
+  | "waiting"
+  | "running"
+  | "completed"
+  | "failed";
 
-Scene 18 occurs later in story order.
-Maya still wears the blue coat.
-Production footage shows that she is also wearing the silver necklace.
+type AgentStep = {
+  agent: AgentName;
+  title: string;
+  description: string;
+  status: AgentStatus;
+  message: string;
+};
 
-Analyze the production continuity.
-Estimate a reshoot delay of around 2 hours and a cost between 800 and 1500 USD when appropriate.`;
+type StreamEvent = {
+  type:
+    | "agent_started"
+    | "agent_completed"
+    | "agent_failed"
+    | "pipeline_completed"
+    | "pipeline_failed";
 
-const ALLOWED_EXTENSIONS = [".txt", ".md", ".csv"];
+  agent?: AgentName;
+  message?: string;
+  error?: string;
+  output?: unknown;
+  producer_decision?: unknown;
+};
+
+type ActivityItem = {
+  id: string;
+  time: string;
+  agent: string;
+  message: string;
+  type:
+    | "info"
+    | "success"
+    | "error";
+};
+
+type HistoryCase = {
+  production_name: string;
+  continuity_score: number;
+  status: string;
+  summary: string;
+};
+
+type HistoryAgentOutput = {
+  similar_cases: number;
+  historical_context: HistoryCase[];
+  historical_signal: "LOW" | "MEDIUM" | "HIGH";
+  insight: string;
+  data_quality_note: string;
+  mcp_verified?: boolean;
+};
+
+type ContinuityAgentIssue = {
+  scene_number: number;
+  category: string;
+  severity: string;
+  title: string;
+  expected_state: string;
+  observed_state: string;
+  confidence: number;
+  evidence?: Array<{
+    source: string;
+    detail: string;
+  }>;
+};
+
+type ContinuityAgentOutput = {
+  production_name: string;
+  issues: ContinuityAgentIssue[];
+};
+
+type ProducerAgentOutput = {
+  executive_summary: string;
+  decision: string;
+  priority: string;
+  reason: string;
+  historical_basis: string;
+  recommended_plan: string;
+  next_action: string;
+};
+
+/* =========================================================
+   DEMO INPUT
+========================================================= */
+
+const DEFAULT_PRODUCTION_TEXT = `Production name: Broken Signal
+
+Scene 4:
+Lena enters the control room wearing a white jacket and carrying a black radio.
+
+Scene 6:
+The black radio is destroyed.
+
+Scene 9:
+This scene occurs later in story order.
+Production footage shows Lena carrying the same black radio, completely intact.
+
+Analyze the production continuity.`;
+
+const ALLOWED_EXTENSIONS = [
+  ".txt",
+  ".md",
+  ".csv",
+];
+
+/* =========================================================
+   AGENT DEFINITIONS
+========================================================= */
+
+function createInitialAgentSteps(): AgentStep[] {
+  return [
+    {
+      agent: "script_agent",
+      title: "Script Agent",
+      description:
+        "Extract scenes, characters, props and story state",
+      status: "waiting",
+      message: "Waiting for production input",
+    },
+    {
+      agent: "continuity_agent",
+      title: "Continuity Agent",
+      description:
+        "Compare scene states and detect conflicts",
+      status: "waiting",
+      message: "Waiting for Script Agent",
+    },
+    {
+      agent: "history_agent",
+      title: "Production Memory Agent",
+      description:
+        "Search historical production intelligence through ClickHouse MCP",
+      status: "waiting",
+      message: "Waiting for continuity findings",
+    },
+    {
+      agent: "producer_agent",
+      title: "Producer Agent",
+      description:
+        "Evaluate production impact and decide next action",
+      status: "waiting",
+      message: "Waiting for continuity analysis",
+    },
+  ];
+}
+
+/* =========================================================
+   SMALL COMPONENTS
+========================================================= */
 
 function StatCard({
   label,
@@ -63,53 +225,265 @@ function StatCard({
 }: {
   label: string;
   value: string | number;
-  icon: React.ComponentType<{ className?: string }>;
+  icon: React.ComponentType<{
+    className?: string;
+  }>;
 }) {
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
       <div className="flex items-center justify-between">
-        <p className="text-sm text-slate-400">{label}</p>
+        <p className="text-sm text-slate-400">
+          {label}
+        </p>
+
         <Icon className="h-5 w-5 text-slate-400" />
       </div>
 
-      <p className="mt-3 text-3xl font-semibold text-white">{value}</p>
+      <p className="mt-3 text-3xl font-semibold text-white">
+        {value}
+      </p>
     </div>
   );
 }
 
-function getFileExtension(fileName: string) {
-  const index = fileName.lastIndexOf(".");
-  return index >= 0 ? fileName.slice(index).toLowerCase() : "";
+function AgentStatusIcon({
+  status,
+}: {
+  status: AgentStatus;
+}) {
+  if (status === "running") {
+    return (
+      <LoaderCircle className="h-5 w-5 animate-spin text-violet-300" />
+    );
+  }
+
+  if (status === "completed") {
+    return (
+      <CheckCircle2 className="h-5 w-5 text-emerald-300" />
+    );
+  }
+
+  if (status === "failed") {
+    return (
+      <XCircle className="h-5 w-5 text-rose-300" />
+    );
+  }
+
+  return (
+    <Circle className="h-5 w-5 text-slate-600" />
+  );
 }
 
-export default function Home() {
-  const fileInputRef = useRef<HTMLInputElement>(null);
+function AgentIcon({
+  agent,
+}: {
+  agent: AgentName;
+}) {
+  if (agent === "script_agent") {
+    return (
+      <FileSearch className="h-5 w-5" />
+    );
+  }
+  if (agent === "history_agent") {
+    return (
+      <Database className="h-5 w-5" />
+    );
+  }
+  if (agent === "continuity_agent") {
+    return (
+      <Bot className="h-5 w-5" />
+    );
+  }
 
-  const [analysis, setAnalysis] = useState(demoAnalysis);
-  const [productionText, setProductionText] = useState(
+  return (
+    <UserRoundCog className="h-5 w-5" />
+  );
+}
+
+function getFileExtension(
+  fileName: string,
+) {
+  const index =
+    fileName.lastIndexOf(".");
+
+  return index >= 0
+    ? fileName
+        .slice(index)
+        .toLowerCase()
+    : "";
+}
+
+/* =========================================================
+   PAGE
+========================================================= */
+
+export default function Home() {
+  
+  const fileInputRef =
+    useRef<HTMLInputElement>(null);
+
+  const [analysis, setAnalysis] =
+    useState(demoAnalysis);
+
+  const [
+    productionText,
+    setProductionText,
+  ] = useState(
     DEFAULT_PRODUCTION_TEXT,
   );
-  const [selectedFileName, setSelectedFileName] = useState<string | null>(
-    null,
-  );
-  const [isReadingFile, setIsReadingFile] = useState(false);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  const totalDelay = analysis.issues.reduce(
-    (sum, issue) => sum + issue.estimatedDelayHours,
-    0,
+  const [
+    selectedFileName,
+    setSelectedFileName,
+  ] = useState<string | null>(null);
+
+  const [
+    isReadingFile,
+    setIsReadingFile,
+  ] = useState(false);
+
+  const [
+    isAnalyzing,
+    setIsAnalyzing,
+  ] = useState(false);
+
+  const [error, setError] =
+    useState<string | null>(null);
+
+  const [
+    agentSteps,
+    setAgentSteps,
+  ] = useState<AgentStep[]>(
+    createInitialAgentSteps(),
   );
 
-  const totalCost = analysis.issues.reduce(
-    (sum, issue) => sum + issue.estimatedCostUsd,
-    0,
-  );
+  const [
+    activities,
+    setActivities,
+  ] = useState<ActivityItem[]>([]);
+
+  const [
+    pipelineCompleted,
+    setPipelineCompleted,
+  ] = useState(false);
+
+  const [
+    historyOutput,
+    setHistoryOutput,
+  ] = useState<HistoryAgentOutput | null>(null);
+
+  const [
+    continuityOutput,
+    setContinuityOutput,
+  ] = useState<ContinuityAgentOutput | null>(null);
+
+  const [
+    producerOutput,
+    setProducerOutput,
+  ] = useState<ProducerAgentOutput | null>(null);
+
+  /* =======================================================
+     CALCULATED VALUES
+  ======================================================= */
+
+  const renderedIssues =
+    continuityOutput?.issues ??
+    analysis.issues.map((issue) => ({
+      scene_number: issue.sceneNumber,
+      category: issue.category,
+      severity: issue.severity,
+      title: issue.title,
+      expected_state: issue.expectedState,
+      observed_state: issue.observedState,
+      confidence: issue.confidence,
+      evidence: [],
+    }));
+
+  const totalDelay =
+    analysis.issues.reduce(
+      (sum, issue) =>
+        sum +
+        issue.estimatedDelayHours,
+      0,
+    );
+
+  const totalCost =
+    analysis.issues.reduce(
+      (sum, issue) =>
+        sum +
+        issue.estimatedCostUsd,
+      0,
+    );
+
+  const completedAgents =
+    agentSteps.filter(
+      (step) =>
+        step.status === "completed",
+    ).length;
+
+  /* =======================================================
+     UTILITIES
+  ======================================================= */
+
+  function addActivity(
+    agent: string,
+    message: string,
+    type: ActivityItem["type"] = "info",
+  ) {
+    const now = new Date();
+
+    const time =
+      now.toLocaleTimeString(
+        undefined,
+        {
+          hour12: false,
+        },
+      );
+
+    setActivities(
+      (current) => [
+        ...current,
+        {
+          id: crypto.randomUUID(),
+          time,
+          agent,
+          message,
+          type,
+        },
+      ],
+    );
+  }
+
+  function updateAgent(
+    agent: AgentName,
+    status: AgentStatus,
+    message?: string,
+  ) {
+    setAgentSteps(
+      (current) =>
+        current.map((step) =>
+          step.agent === agent
+            ? {
+                ...step,
+                status,
+                message:
+                  message ??
+                  step.message,
+              }
+            : step,
+        ),
+    );
+  }
+
+  /* =======================================================
+     FILE INPUT
+  ======================================================= */
 
   async function handleFileChange(
     event: ChangeEvent<HTMLInputElement>,
   ) {
-    const file = event.target.files?.[0];
+    const file =
+      event.target.files?.[0];
 
     if (!file) {
       return;
@@ -117,38 +491,62 @@ export default function Home() {
 
     setError(null);
 
-    const extension = getFileExtension(file.name);
+    const extension =
+      getFileExtension(file.name);
 
-    if (!ALLOWED_EXTENSIONS.includes(extension)) {
-      setError("Only .txt, .md, and .csv files are currently supported.");
+    if (
+      !ALLOWED_EXTENSIONS.includes(
+        extension,
+      )
+    ) {
+      setError(
+        "Only TXT, Markdown and CSV files are currently supported.",
+      );
+
       event.target.value = "";
+
       return;
     }
 
-    if (file.size > 2 * 1024 * 1024) {
-      setError("The selected file must be smaller than 2 MB.");
+    if (
+      file.size >
+      2 * 1024 * 1024
+    ) {
+      setError(
+        "The selected file must be smaller than 2 MB.",
+      );
+
       event.target.value = "";
+
       return;
     }
 
     setIsReadingFile(true);
 
     try {
-      const content = await file.text();
+      const content =
+        await file.text();
 
-      if (content.trim().length < 20) {
+      if (
+        content.trim().length < 20
+      ) {
         throw new Error(
           "The selected file does not contain enough readable content.",
         );
       }
 
-      setSelectedFileName(file.name);
-      setProductionText(content);
+      setSelectedFileName(
+        file.name,
+      );
+
+      setProductionText(
+        content,
+      );
     } catch (caughtError) {
       setError(
         caughtError instanceof Error
           ? caughtError.message
-          : "Unable to read the selected file.",
+          : "Unable to read file.",
       );
 
       event.target.value = "";
@@ -159,115 +557,345 @@ export default function Home() {
 
   function clearSelectedFile() {
     setSelectedFileName(null);
+
     setProductionText("");
 
     if (fileInputRef.current) {
-      fileInputRef.current.value = "";
+      fileInputRef.current.value =
+        "";
     }
   }
 
   function loadDemoData() {
     setError(null);
+
     setSelectedFileName(null);
-    setProductionText(DEFAULT_PRODUCTION_TEXT);
+
+    setProductionText(
+      DEFAULT_PRODUCTION_TEXT,
+    );
 
     if (fileInputRef.current) {
-      fileInputRef.current.value = "";
+      fileInputRef.current.value =
+        "";
     }
   }
 
+  /* =======================================================
+     SSE PARSER
+  ======================================================= */
+
+  function processStreamEvent(
+    event: StreamEvent,
+  ) {
+    if (
+      event.type ===
+        "agent_started" &&
+      event.agent
+    ) {
+      updateAgent(
+        event.agent,
+        "running",
+        event.message ??
+          "Agent started",
+      );
+
+      addActivity(
+        event.agent,
+        event.message ??
+          "Agent started",
+      );
+
+      return;
+    }
+
+    if (
+      event.type ===
+        "agent_completed" &&
+      event.agent
+    ) {
+      updateAgent(
+        event.agent,
+        "completed",
+        event.message ??
+          "Completed",
+      );
+
+      addActivity(
+        event.agent,
+        event.message ??
+          "Completed",
+        "success",
+      );
+
+      if (
+        event.agent === "continuity_agent" &&
+        event.output &&
+        typeof event.output === "object"
+      ) {
+        setContinuityOutput(
+          event.output as ContinuityAgentOutput,
+        );
+      }
+
+      if (
+        event.agent === "history_agent" &&
+        event.output &&
+        typeof event.output === "object"
+      ) {
+        setHistoryOutput(
+          event.output as HistoryAgentOutput,
+        );
+      }
+
+      if (
+        event.agent === "producer_agent" &&
+        event.output &&
+        typeof event.output === "object"
+      ) {
+        setProducerOutput(
+          event.output as ProducerAgentOutput,
+        );
+      }
+
+      return;
+    }
+
+    if (
+      event.type ===
+        "agent_failed" &&
+      event.agent
+    ) {
+      updateAgent(
+        event.agent,
+        "failed",
+        event.error ??
+          "Agent failed",
+      );
+
+      addActivity(
+        event.agent,
+        event.error ??
+          "Agent failed",
+        "error",
+      );
+
+      return;
+    }
+
+    if (
+      event.type ===
+      "pipeline_completed"
+    ) {
+      setPipelineCompleted(true);
+
+      addActivity(
+        "orchestrator",
+        "AI production crew completed the workflow.",
+        "success",
+      );
+
+      if (
+        event.producer_decision &&
+        typeof event.producer_decision === "object"
+      ) {
+        setProducerOutput(
+          event.producer_decision as ProducerAgentOutput,
+        );
+      }
+
+      return;
+    }
+
+    if (
+      event.type ===
+      "pipeline_failed"
+    ) {
+      addActivity(
+        "orchestrator",
+        event.error ??
+          "Pipeline failed",
+        "error",
+      );
+
+      setError(
+        event.error ??
+          "Agent pipeline failed.",
+      );
+    }
+  }
+
+  /* =======================================================
+     ANALYZE
+  ======================================================= */
+
   async function analyzeProduction() {
-    if (productionText.trim().length < 20) {
-      setError("Production description must contain at least 20 characters.");
+    if (
+      productionText.trim().length <
+      20
+    ) {
+      setError(
+        "Production description must contain at least 20 characters.",
+      );
+
       return;
     }
 
     setIsAnalyzing(true);
     setError(null);
+    setPipelineCompleted(false);
+    setHistoryOutput(null);
+    setContinuityOutput(null);
+    setProducerOutput(null);
+
+    setActivities([]);
+
+    setAgentSteps(
+      createInitialAgentSteps(),
+    );
+
+    addActivity(
+      "orchestrator",
+      "Production analysis requested.",
+    );
 
     try {
-      const response = await fetch("/api/analyze", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          productionText,
-        }),
-      });
-
-      const result = (await response.json()) as
-        | AgentAnalysis
-        | {
-            error?: string;
-            detail?: string;
-          };
+      const response =
+        await fetch(
+          "/api/analyze?stream=1",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+            body: JSON.stringify({
+              productionText,
+            }),
+          },
+        );
 
       if (!response.ok) {
-        const message =
-          "error" in result && result.error
-            ? result.error
-            : "Analysis failed.";
+        const result =
+          await response.json();
 
-        const detail =
-          "detail" in result && result.detail
-            ? ` ${result.detail}`
-            : "";
-
-        throw new Error(`${message}${detail}`);
+        throw new Error(
+          result.error ??
+            "Unable to start agent pipeline.",
+        );
       }
 
-      const agentResult = result as AgentAnalysis;
+      if (!response.body) {
+        throw new Error(
+          "Agent pipeline returned no stream.",
+        );
+      }
 
-      setAnalysis({
-        productionName: agentResult.production_name,
-        continuityScore: agentResult.continuity_score,
-        status: agentResult.status,
-        summary: agentResult.summary,
-        stats: {
-          totalScenes: 24,
-          completedScenes: 17,
-          openIssues: agentResult.issues.length,
-          criticalIssues: agentResult.issues.filter(
-            (issue) =>
-              issue.severity === "CRITICAL" ||
-              issue.severity === "HIGH",
-          ).length,
-        },
-        issues: agentResult.issues.map((issue, index) => ({
-          id: `ISSUE-${String(index + 1).padStart(3, "0")}`,
-          sceneNumber: issue.scene_number,
-          category: issue.category,
-          severity: issue.severity,
-          title: issue.title,
-          expectedState: issue.expected_state,
-          observedState: issue.observed_state,
-          confidence: issue.confidence,
-          estimatedDelayHours:
-            issue.recommended_action.estimated_delay_hours,
-          estimatedCostUsd:
-            issue.recommended_action.estimated_cost_usd,
-          recommendation: issue.recommended_action.action,
-        })),
-      });
+      const reader =
+        response.body.getReader();
+
+      const decoder =
+        new TextDecoder();
+
+      let buffer = "";
+
+      while (true) {
+        const {
+          done,
+          value,
+        } = await reader.read();
+
+        if (done) {
+          break;
+        }
+
+        buffer += decoder.decode(
+          value,
+          {
+            stream: true,
+          },
+        );
+
+        const blocks =
+          buffer.split("\n\n");
+
+        buffer =
+          blocks.pop() ?? "";
+
+        for (const block of blocks) {
+          const lines =
+            block.split("\n");
+
+          for (const line of lines) {
+            if (
+              !line.startsWith(
+                "data:",
+              )
+            ) {
+              continue;
+            }
+
+            const raw =
+              line
+                .slice(5)
+                .trim();
+
+            if (!raw) {
+              continue;
+            }
+
+            try {
+              const event =
+                JSON.parse(
+                  raw,
+                ) as StreamEvent;
+
+              processStreamEvent(
+                event,
+              );
+            } catch {
+              console.warn(
+                "Invalid SSE event:",
+                raw,
+              );
+            }
+          }
+        }
+      }
+
     } catch (caughtError) {
-      setError(
+      const message =
         caughtError instanceof Error
           ? caughtError.message
-          : "Unable to analyze production.",
+          : "Unable to analyze production.";
+
+      setError(message);
+
+      addActivity(
+        "system",
+        message,
+        "error",
       );
     } finally {
       setIsAnalyzing(false);
     }
   }
 
+  /* =======================================================
+     UI
+  ======================================================= */
+
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100">
       <div className="mx-auto max-w-7xl px-6 py-8">
+
+        {/* HEADER */}
+
         <header className="flex flex-col gap-5 border-b border-white/10 pb-7 md:flex-row md:items-center md:justify-between">
           <div>
             <div className="flex items-center gap-2 text-sm text-violet-300">
               <Sparkles className="h-4 w-4" />
+
               Gemini Production Intelligence
             </div>
 
@@ -276,20 +904,27 @@ export default function Home() {
             </h1>
 
             <p className="mt-2 text-slate-400">
-              {analysis.productionName} · Production continuity overview
+              {continuityOutput?.production_name ?? analysis.productionName}
+              {" · "}
+              AI Production Crew
             </p>
           </div>
 
           <button
             type="button"
-            onClick={analyzeProduction}
-            disabled={isAnalyzing || isReadingFile}
+            onClick={
+              analyzeProduction
+            }
+            disabled={
+              isAnalyzing ||
+              isReadingFile
+            }
             className="inline-flex items-center justify-center gap-2 rounded-xl bg-white px-5 py-3 font-medium text-slate-950 transition hover:bg-slate-200 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isAnalyzing ? (
               <>
                 <LoaderCircle className="h-4 w-4 animate-spin" />
-                Analyzing…
+                AI crew working…
               </>
             ) : (
               <>
@@ -300,11 +935,15 @@ export default function Home() {
           </button>
         </header>
 
+        {/* ERROR */}
+
         {error && (
           <div className="mt-5 rounded-xl border border-rose-400/30 bg-rose-400/10 p-4 text-sm text-rose-200">
             {error}
           </div>
         )}
+
+        {/* INPUT */}
 
         <section className="mt-6 rounded-3xl border border-white/10 bg-white/[0.03] p-6">
           <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
@@ -314,91 +953,57 @@ export default function Home() {
               </h2>
 
               <p className="mt-1 text-sm text-slate-400">
-                Upload a text-based production file or paste script notes,
-                production logs, and continuity observations.
+                Upload production notes
+                or paste screenplay
+                context.
               </p>
             </div>
 
             <span className="w-fit rounded-full bg-violet-500/15 px-3 py-1 text-xs text-violet-300">
-              Live ADK analysis input
+              Google ADK Multi-Agent
             </span>
           </div>
 
-          <div className="mt-5 rounded-2xl border border-dashed border-white/15 bg-slate-950/40 p-5">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".txt,.md,.csv,text/plain,text/markdown,text/csv"
-              onChange={handleFileChange}
-              className="hidden"
-            />
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".txt,.md,.csv"
+            onChange={
+              handleFileChange
+            }
+            className="hidden"
+          />
 
-            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-              <div className="flex items-start gap-3">
-                <div className="rounded-xl bg-violet-500/15 p-3">
-                  <Upload className="h-5 w-5 text-violet-300" />
-                </div>
+          <div className="mt-5 flex flex-wrap gap-2">
+            <button
+              onClick={() =>
+                fileInputRef.current?.click()
+              }
+              className="inline-flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2 text-sm hover:bg-white/10"
+            >
+              <Upload className="h-4 w-4" />
+              Choose file
+            </button>
 
-                <div>
-                  <p className="font-medium text-slate-200">
-                    Upload production data
-                  </p>
-
-                  <p className="mt-1 text-sm text-slate-500">
-                    Supported formats: TXT, Markdown, CSV · Maximum 2 MB
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isReadingFile || isAnalyzing}
-                  className="inline-flex items-center gap-2 rounded-xl border border-white/10 px-4 py-2 text-sm transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isReadingFile ? (
-                    <LoaderCircle className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Upload className="h-4 w-4" />
-                  )}
-
-                  {isReadingFile ? "Reading file…" : "Choose file"}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={loadDemoData}
-                  disabled={isAnalyzing}
-                  className="rounded-xl border border-white/10 px-4 py-2 text-sm transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  Load demo
-                </button>
-              </div>
-            </div>
+            <button
+              onClick={
+                loadDemoData
+              }
+              className="rounded-xl border border-white/10 px-4 py-2 text-sm hover:bg-white/10"
+            >
+              Load demo
+            </button>
 
             {selectedFileName && (
-              <div className="mt-4 flex items-center justify-between rounded-xl border border-emerald-400/20 bg-emerald-400/5 px-4 py-3">
-                <div className="flex min-w-0 items-center gap-3">
-                  <FileText className="h-5 w-5 shrink-0 text-emerald-300" />
+              <div className="flex items-center gap-2 rounded-xl border border-emerald-400/20 bg-emerald-400/5 px-4 py-2 text-sm">
+                <FileText className="h-4 w-4 text-emerald-300" />
 
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-slate-200">
-                      {selectedFileName}
-                    </p>
-
-                    <p className="text-xs text-emerald-300">
-                      File loaded successfully
-                    </p>
-                  </div>
-                </div>
+                {selectedFileName}
 
                 <button
-                  type="button"
-                  onClick={clearSelectedFile}
-                  disabled={isAnalyzing}
-                  className="rounded-lg p-2 text-slate-400 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-60"
-                  aria-label="Remove selected file"
+                  onClick={
+                    clearSelectedFile
+                  }
                 >
                   <X className="h-4 w-4" />
                 </button>
@@ -407,60 +1012,384 @@ export default function Home() {
           </div>
 
           <textarea
-            value={productionText}
-            onChange={(event) => {
-              setProductionText(event.target.value);
-
-              if (selectedFileName) {
-                setSelectedFileName(null);
-
-                if (fileInputRef.current) {
-                  fileInputRef.current.value = "";
-                }
-              }
-            }}
-            rows={10}
-            disabled={isAnalyzing || isReadingFile}
-            className="mt-5 w-full resize-y rounded-2xl border border-white/10 bg-slate-950/70 p-4 text-sm leading-6 text-slate-200 outline-none transition placeholder:text-slate-600 focus:border-violet-400/50 disabled:cursor-not-allowed disabled:opacity-60"
-            placeholder="Upload a file or paste production data here..."
+            value={
+              productionText
+            }
+            onChange={(event) =>
+              setProductionText(
+                event.target.value,
+              )
+            }
+            rows={9}
+            disabled={
+              isAnalyzing
+            }
+            className="mt-5 w-full resize-y rounded-2xl border border-white/10 bg-slate-950/70 p-4 text-sm leading-6 text-slate-200 outline-none focus:border-violet-400/50"
           />
+        </section>
 
-          <div className="mt-3 flex flex-col gap-2 text-xs text-slate-500 sm:flex-row sm:items-center sm:justify-between">
-            <span>{productionText.length} characters</span>
+        {/* AI CREW */}
 
-            <span>
-              Input is sent to ContinuityOS through Google ADK
-            </span>
+        <section className="mt-6 grid gap-6 lg:grid-cols-[1fr_420px]">
+
+          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-semibold">
+                  AI Production Crew
+                </h2>
+
+                <p className="mt-1 text-sm text-slate-400">
+                  Live execution of
+                  Google ADK agents
+                </p>
+              </div>
+
+              <span className="text-sm text-slate-400">
+                {completedAgents}/
+                {agentSteps.length}
+                {" "}
+                completed
+              </span>
+            </div>
+
+            <div className="mt-6 space-y-3">
+              {agentSteps.map(
+                (step) => (
+                  <div
+                    key={step.agent}
+                    className="flex gap-4 rounded-2xl border border-white/10 bg-slate-900/70 p-4"
+                  >
+                    <div className="mt-1 text-violet-300">
+                      <AgentIcon
+                        agent={
+                          step.agent
+                        }
+                      />
+                    </div>
+
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-4">
+                        <p className="font-medium">
+                          {step.title}
+                        </p>
+
+                        <AgentStatusIcon
+                          status={
+                            step.status
+                          }
+                        />
+                      </div>
+
+                      <p className="mt-1 text-xs text-slate-500">
+                        {step.description}
+                      </p>
+
+                      <p className="mt-3 text-sm text-slate-300">
+                        {step.message}
+                      </p>
+                    </div>
+                  </div>
+                ),
+              )}
+            </div>
+
+            {pipelineCompleted && (
+              <div className="mt-4 flex items-center gap-2 rounded-xl border border-emerald-400/20 bg-emerald-400/5 p-4 text-sm text-emerald-300">
+                <Check className="h-4 w-4" />
+                AI production workflow completed.
+              </div>
+            )}
+          </div>
+
+          {/* ACTIVITY */}
+
+          <div className="rounded-3xl border border-white/10 bg-slate-950/60 p-6">
+            <div className="flex items-center gap-2">
+              <Database className="h-5 w-5 text-violet-300" />
+
+              <h2 className="font-semibold">
+                Agent Activity
+              </h2>
+            </div>
+
+            <div className="mt-5 max-h-[430px] space-y-4 overflow-y-auto pr-2">
+              {activities.length ===
+              0 ? (
+                <p className="text-sm text-slate-500">
+                  Activity will
+                  appear when analysis
+                  starts.
+                </p>
+              ) : (
+                activities.map(
+                  (item) => (
+                    <div
+                      key={
+                        item.id
+                      }
+                      className="border-l border-white/10 pl-4"
+                    >
+                      <div className="flex items-center gap-2 text-xs text-slate-500">
+                        <span>
+                          {item.time}
+                        </span>
+
+                        <span>
+                          {item.agent}
+                        </span>
+                      </div>
+
+                      <p
+                        className={`mt-1 text-sm ${
+                          item.type ===
+                          "error"
+                            ? "text-rose-300"
+                            : item.type ===
+                                "success"
+                              ? "text-emerald-300"
+                              : "text-slate-300"
+                        }`}
+                      >
+                        {
+                          item.message
+                        }
+                      </p>
+                    </div>
+                  ),
+                )
+              )}
+            </div>
           </div>
         </section>
+
+        {/* PRODUCTION MEMORY */}
+
+        {historyOutput && (
+          <section className="mt-6 rounded-3xl border border-white/10 bg-white/[0.03] p-6">
+            <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <Database className="h-5 w-5 text-violet-300" />
+                  <h2 className="text-xl font-semibold">
+                    Production Memory
+                  </h2>
+                </div>
+
+                <p className="mt-1 text-sm text-slate-400">
+                  Historical evidence retrieved through ClickHouse MCP
+                </p>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                {historyOutput.mcp_verified && (
+                  <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-xs text-emerald-300">
+                    MCP verified
+                  </span>
+                )}
+
+                <span className="rounded-full border border-violet-400/20 bg-violet-400/10 px-3 py-1 text-xs text-violet-300">
+                  {historyOutput.similar_cases} similar cases
+                </span>
+
+                <span className="rounded-full border border-amber-400/20 bg-amber-400/10 px-3 py-1 text-xs text-amber-300">
+                  Signal: {historyOutput.historical_signal}
+                </span>
+              </div>
+            </div>
+
+            <div className="mt-5 rounded-2xl border border-white/10 bg-slate-950/50 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">
+                Historical insight
+              </p>
+
+              <p className="mt-2 text-sm leading-6 text-slate-300">
+                {historyOutput.insight}
+              </p>
+            </div>
+
+            <div className="mt-5 grid gap-4 lg:grid-cols-2">
+              {historyOutput.historical_context.map(
+                (item, index) => (
+                  <article
+                    key={`${item.production_name}-${index}`}
+                    className="rounded-2xl border border-white/10 bg-slate-900/70 p-5"
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <p className="font-medium text-white">
+                          {item.production_name}
+                        </p>
+
+                        <p className="mt-1 text-xs text-slate-500">
+                          Historical production evidence
+                        </p>
+                      </div>
+
+                      <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-slate-300">
+                        Score {item.continuity_score}
+                      </span>
+                    </div>
+
+                    <div className="mt-3">
+                      <span
+                        className={`rounded-full px-3 py-1 text-xs ${
+                          item.status === "CRITICAL"
+                            ? "bg-rose-500/15 text-rose-300"
+                            : "bg-amber-500/15 text-amber-300"
+                        }`}
+                      >
+                        {item.status.replaceAll("_", " ")}
+                      </span>
+                    </div>
+
+                    <p className="mt-4 text-sm leading-6 text-slate-300">
+                      {item.summary}
+                    </p>
+                  </article>
+                ),
+              )}
+            </div>
+
+            {historyOutput.data_quality_note && (
+              <div className="mt-5 rounded-2xl border border-sky-400/10 bg-sky-400/5 p-4">
+                <p className="text-xs uppercase tracking-wide text-sky-300">
+                  Data quality note
+                </p>
+
+                <p className="mt-2 text-sm leading-6 text-slate-400">
+                  {historyOutput.data_quality_note}
+                </p>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* PRODUCER DECISION */}
+
+        {producerOutput && (
+          <section className="mt-6 rounded-3xl border border-white/10 bg-gradient-to-br from-violet-500/10 to-white/[0.03] p-6">
+            <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+              <div>
+                <div className="flex items-center gap-2">
+                  <UserRoundCog className="h-5 w-5 text-violet-300" />
+                  <h2 className="text-xl font-semibold">
+                    Producer Decision
+                  </h2>
+                </div>
+                <p className="mt-1 text-sm text-slate-400">
+                  Final decision from the multi-agent production workflow
+                </p>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <span className="rounded-full border border-rose-400/20 bg-rose-400/10 px-3 py-1 text-xs text-rose-300">
+                  {producerOutput.decision.replaceAll("_", " ")}
+                </span>
+                <span className="rounded-full border border-amber-400/20 bg-amber-400/10 px-3 py-1 text-xs text-amber-300">
+                  {producerOutput.priority}
+                </span>
+              </div>
+            </div>
+
+            <p className="mt-5 leading-7 text-slate-200">
+              {producerOutput.executive_summary}
+            </p>
+
+            <div className="mt-5 grid gap-4 lg:grid-cols-2">
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-5">
+                <p className="text-xs uppercase tracking-wide text-slate-500">
+                  Reason
+                </p>
+                <p className="mt-2 text-sm leading-6 text-slate-300">
+                  {producerOutput.reason}
+                </p>
+              </div>
+
+              <div className="rounded-2xl border border-violet-400/15 bg-violet-400/5 p-5">
+                <p className="text-xs uppercase tracking-wide text-violet-300">
+                  Historical basis
+                </p>
+                <p className="mt-2 text-sm leading-6 text-slate-300">
+                  {producerOutput.historical_basis}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-2xl border border-emerald-400/15 bg-emerald-400/5 p-5">
+              <p className="text-xs uppercase tracking-wide text-emerald-300">
+                Recommended plan
+              </p>
+              <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-300">
+                {producerOutput.recommended_plan}
+              </p>
+            </div>
+
+            <div className="mt-4 rounded-2xl border border-white/10 bg-slate-950/50 p-5">
+              <p className="text-xs uppercase tracking-wide text-slate-500">
+                Next action
+              </p>
+              <p className="mt-2 text-sm leading-6 text-white">
+                {producerOutput.next_action}
+              </p>
+            </div>
+          </section>
+        )}
+
+        {/* STATS */}
 
         <section className="mt-7 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <StatCard
             label="Total scenes"
-            value={analysis.stats.totalScenes}
-            icon={Clapperboard}
+            value={
+              analysis.stats
+                .totalScenes
+            }
+            icon={
+              Clapperboard
+            }
           />
 
           <StatCard
             label="Completed"
-            value={analysis.stats.completedScenes}
-            icon={CheckCircle2}
+            value={
+              analysis.stats
+                .completedScenes
+            }
+            icon={
+              CheckCircle2
+            }
           />
 
           <StatCard
             label="Open issues"
-            value={analysis.stats.openIssues}
-            icon={AlertTriangle}
+            value={
+              renderedIssues.length
+            }
+            icon={
+              AlertTriangle
+            }
           />
 
           <StatCard
             label="Critical issues"
-            value={analysis.stats.criticalIssues}
-            icon={ShieldAlert}
+            value={
+              renderedIssues.filter(
+                (issue) =>
+                  issue.severity === "CRITICAL" ||
+                  issue.severity === "HIGH",
+              ).length
+            }
+            icon={
+              ShieldAlert
+            }
           />
         </section>
 
+        {/* RESULTS */}
+
         <section className="mt-6 grid gap-6 lg:grid-cols-[360px_1fr]">
+
           <aside className="rounded-3xl border border-white/10 bg-gradient-to-b from-violet-500/15 to-white/5 p-6">
             <p className="text-sm text-slate-400">
               Continuity score
@@ -468,7 +1397,9 @@ export default function Home() {
 
             <div className="mt-5 flex items-end gap-2">
               <span className="text-7xl font-semibold">
-                {analysis.continuityScore}
+                {
+                  analysis.continuityScore
+                }
               </span>
 
               <span className="pb-2 text-xl text-slate-400">
@@ -486,7 +1417,10 @@ export default function Home() {
             </div>
 
             <div className="mt-5 inline-flex rounded-full border border-amber-400/30 bg-amber-400/10 px-3 py-1 text-sm text-amber-300">
-              {analysis.status.replaceAll("_", " ")}
+              {analysis.status.replaceAll(
+                "_",
+                " ",
+              )}
             </div>
 
             <p className="mt-5 leading-7 text-slate-300">
@@ -510,7 +1444,8 @@ export default function Home() {
                 <DollarSign className="h-5 w-5 text-slate-400" />
 
                 <p className="mt-3 text-2xl font-semibold">
-                  ${totalCost.toLocaleString()}
+                  $
+                  {totalCost.toLocaleString()}
                 </p>
 
                 <p className="text-xs text-slate-400">
@@ -528,7 +1463,8 @@ export default function Home() {
                 </h2>
 
                 <p className="mt-1 text-sm text-slate-400">
-                  Issues detected by the continuity intelligence agent
+                  Issues identified by
+                  the AI production crew
                 </p>
               </div>
 
@@ -536,89 +1472,84 @@ export default function Home() {
             </div>
 
             <div className="mt-6 space-y-4">
-              {analysis.issues.length === 0 ? (
+              {renderedIssues.length ===
+              0 ? (
                 <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/5 p-6">
                   <p className="font-medium text-emerald-300">
-                    No continuity issues detected
-                  </p>
-
-                  <p className="mt-2 text-sm text-slate-400">
-                    The production package currently appears healthy.
+                    No continuity
+                    issues detected
                   </p>
                 </div>
               ) : (
-                analysis.issues.map((issue) => (
-                  <article
-                    key={issue.id}
-                    className="rounded-2xl border border-white/10 bg-slate-900/80 p-5"
-                  >
-                    <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                      <div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="rounded-full bg-white/10 px-3 py-1 text-xs text-slate-300">
-                            Scene {issue.sceneNumber}
-                          </span>
+                renderedIssues.map(
+                  (issue, index) => (
+                    <article
+                      key={`${issue.scene_number}-${issue.category}-${index}`}
+                      className="rounded-2xl border border-white/10 bg-slate-900/80 p-5"
+                    >
+                      <div className="flex flex-wrap gap-2">
+                        <span className="rounded-full bg-white/10 px-3 py-1 text-xs">
+                          Scene {issue.scene_number}
+                        </span>
+                        <span className="rounded-full bg-violet-500/15 px-3 py-1 text-xs text-violet-300">
+                          {issue.category}
+                        </span>
+                        <span className="rounded-full bg-rose-500/15 px-3 py-1 text-xs text-rose-300">
+                          {issue.severity}
+                        </span>
+                      </div>
 
-                          <span className="rounded-full bg-violet-500/15 px-3 py-1 text-xs text-violet-300">
-                            {issue.category}
-                          </span>
+                      <h3 className="mt-4 text-lg font-medium">
+                        {issue.title}
+                      </h3>
 
-                          <span className="rounded-full bg-rose-500/15 px-3 py-1 text-xs text-rose-300">
-                            {issue.severity}
-                          </span>
+                      <p className="mt-2 text-sm text-slate-400">
+                        Confidence: {Math.round(issue.confidence * 100)}%
+                      </p>
+
+                      <div className="mt-5 grid gap-4 md:grid-cols-2">
+                        <div className="rounded-xl bg-black/20 p-4">
+                          <p className="text-xs uppercase text-slate-500">
+                            Expected
+                          </p>
+                          <p className="mt-2 text-sm leading-6 text-slate-300">
+                            {issue.expected_state}
+                          </p>
                         </div>
 
-                        <h3 className="mt-4 text-lg font-medium">
-                          {issue.title}
-                        </h3>
-
-                        <p className="mt-2 text-sm text-slate-400">
-                          Confidence:{" "}
-                          {Math.round(issue.confidence * 100)}%
-                        </p>
+                        <div className="rounded-xl bg-black/20 p-4">
+                          <p className="text-xs uppercase text-slate-500">
+                            Observed
+                          </p>
+                          <p className="mt-2 text-sm leading-6 text-slate-300">
+                            {issue.observed_state}
+                          </p>
+                        </div>
                       </div>
 
-                      <button
-                        type="button"
-                        className="rounded-xl border border-white/10 px-4 py-2 text-sm transition hover:bg-white/10"
-                      >
-                        Review issue
-                      </button>
-                    </div>
-
-                    <div className="mt-5 grid gap-4 md:grid-cols-2">
-                      <div className="rounded-xl bg-black/20 p-4">
-                        <p className="text-xs uppercase tracking-wide text-slate-500">
-                          Expected
-                        </p>
-
-                        <p className="mt-2 text-sm leading-6 text-slate-300">
-                          {issue.expectedState}
-                        </p>
-                      </div>
-
-                      <div className="rounded-xl bg-black/20 p-4">
-                        <p className="text-xs uppercase tracking-wide text-slate-500">
-                          Observed
-                        </p>
-
-                        <p className="mt-2 text-sm leading-6 text-slate-300">
-                          {issue.observedState}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="mt-4 rounded-xl border border-emerald-400/15 bg-emerald-400/5 p-4">
-                      <p className="text-xs uppercase tracking-wide text-emerald-300">
-                        Recommended action
-                      </p>
-
-                      <p className="mt-2 text-sm leading-6 text-slate-300">
-                        {issue.recommendation}
-                      </p>
-                    </div>
-                  </article>
-                ))
+                      {issue.evidence && issue.evidence.length > 0 && (
+                        <div className="mt-4 rounded-xl border border-sky-400/15 bg-sky-400/5 p-4">
+                          <p className="text-xs uppercase text-sky-300">
+                            Evidence
+                          </p>
+                          <div className="mt-3 space-y-2">
+                            {issue.evidence.map((evidence, evidenceIndex) => (
+                              <div
+                                key={`${evidence.source}-${evidenceIndex}`}
+                                className="text-sm leading-6 text-slate-300"
+                              >
+                                <span className="font-medium text-slate-200">
+                                  {evidence.source}:
+                                </span>{" "}
+                                {evidence.detail}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </article>
+                  ),
+                )
               )}
             </div>
           </section>

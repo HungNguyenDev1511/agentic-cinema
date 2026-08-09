@@ -1,25 +1,27 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest } from "next/server";
 
 const AGENT_API_URL =
-  process.env.AGENT_API_URL ?? "http://127.0.0.1:8001";
+  process.env.AGENT_API_URL ??
+  "http://127.0.0.1:8001";
+
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
 
 type AnalyzeRequest = {
   productionText?: string;
 };
 
-type AgentApiError = {
-  detail?: string;
-};
-
 export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as AnalyzeRequest;
+
     const productionText = body.productionText?.trim();
 
     if (!productionText || productionText.length < 20) {
-      return NextResponse.json(
+      return Response.json(
         {
-          error: "Production description must contain at least 20 characters.",
+          error:
+            "Production description must contain at least 20 characters.",
         },
         {
           status: 400,
@@ -27,56 +29,120 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const response = await fetch(`${AGENT_API_URL}/analyze`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        production_text: productionText,
-      }),
-      cache: "no-store",
-    });
+    const isStream =
+      request.nextUrl.searchParams.get("stream") === "1";
 
-    if (!response.ok) {
-      let detail = "Agent API request failed.";
+    // =====================================================
+    // MULTI-AGENT SSE STREAM
+    // =====================================================
 
-      try {
-        const errorBody = (await response.json()) as AgentApiError;
+    if (isStream) {
+      const upstreamResponse = await fetch(
+        `${AGENT_API_URL}/analyze/stream`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "text/event-stream",
+          },
+          body: JSON.stringify({
+            production_text: productionText,
+          }),
+          cache: "no-store",
+        },
+      );
 
-        if (errorBody.detail) {
-          detail = errorBody.detail;
-        }
-      } catch {
-        const rawError = await response.text();
+      if (!upstreamResponse.ok) {
+        const detail = await upstreamResponse.text();
 
-        if (rawError) {
-          detail = rawError;
-        }
+        return Response.json(
+          {
+            error: "Agent pipeline failed.",
+            detail,
+          },
+          {
+            status: upstreamResponse.status,
+          },
+        );
       }
 
-      return NextResponse.json(
+      if (!upstreamResponse.body) {
+        return Response.json(
+          {
+            error: "Agent pipeline returned no stream.",
+          },
+          {
+            status: 502,
+          },
+        );
+      }
+
+      return new Response(upstreamResponse.body, {
+        status: 200,
+        headers: {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache, no-transform",
+          "X-Accel-Buffering": "no",
+        },
+      });
+    }
+
+    // =====================================================
+    // NORMAL FINAL ANALYSIS
+    // =====================================================
+
+    const upstreamResponse = await fetch(
+      `${AGENT_API_URL}/analyze`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          production_text: productionText,
+        }),
+        cache: "no-store",
+      },
+    );
+
+    const rawText = await upstreamResponse.text();
+
+    if (!upstreamResponse.ok) {
+      return Response.json(
         {
           error: "Unable to analyze production.",
-          detail,
+          detail: rawText,
         },
         {
-          status: response.status,
+          status: upstreamResponse.status,
         },
       );
     }
 
-    const result = await response.json();
-
-    return NextResponse.json(result);
+    try {
+      return Response.json(
+        JSON.parse(rawText),
+      );
+    } catch {
+      return Response.json(
+        {
+          error:
+            "Agent API returned invalid JSON.",
+          detail: rawText,
+        },
+        {
+          status: 502,
+        },
+      );
+    }
   } catch (error) {
-    return NextResponse.json(
+    return Response.json(
       {
-        error: "Unexpected analysis error.",
+        error: "Unable to analyze production.",
         detail:
           error instanceof Error
             ? error.message
-            : "Unknown server error.",
+            : "Unknown error",
       },
       {
         status: 500,
