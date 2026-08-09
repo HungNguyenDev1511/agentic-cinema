@@ -399,9 +399,9 @@ The goal is to help production teams detect expensive mistakes earlier and turn 
 
 📺 Demo
 
-Demo video:YouTube link will be added after upload.
+Demo video: youtube.com/watch?v=AuPVjnIqLVI&time_continue=1&source_ve_path=MjM4NTE&embeds_referring_euri=https%3A%2F%2Fdevpost.com%2F
 
-Live application:Production URL will be added before submission.
+Live application: https://agentic-cinema-web-207811053230.asia-southeast1.run.app/
 
 📄 License
 
